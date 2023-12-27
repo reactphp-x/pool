@@ -1,0 +1,19 @@
+{
+    "name": "reactphp-framework/pool",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Reactphp\\Framework\\Pool\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "wpjscc",
+            "email": "wpjscc@gmail.com"
+        }
+    ],
+    "require": {
+        "react/async": "^4.2",
+        "react/promise-timer": "^1.10"
+    }
+}
