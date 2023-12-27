@@ -13,17 +13,17 @@ use React\Promise\Timer\TimeoutException;
 abstract class AbstractConnectionPool implements ConnectionPoolInterface
 {
 
-    private $min_connections;
-    private $max_connections;
+    protected $min_connections;
+    protected $max_connections;
 
-    private $keep_alive;
+    protected $keep_alive;
 
-    private $max_wait_queue;
-    private $current_connections = 0;
-    private $wait_timeout = 0;
-    private $idle_connections = [];
-    private $wait_queue;
-    private $loop;
+    protected $max_wait_queue;
+    protected $current_connections = 0;
+    protected $wait_timeout = 0;
+    protected $idle_connections = [];
+    protected $wait_queue;
+    protected $loop;
     protected $closed;
 
 
@@ -119,14 +119,14 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
                 $this->current_connections--;
             } else {
                 $ping = Loop::addPeriodicTimer($this->keep_alive, function () use ($connection, &$ping) {
-                   $this->ping($connection)->then(null, function($e) use ($ping){
+                   $this->_ping($connection)->then(null, function($e) use ($ping){
                        if ($ping) {
                            Loop::cancelTimer($ping);
                        }
                        $ping = null;
                    });
                 });
-                $this->ping($connection)->then(null, function($e) use ($ping){
+                $this->_ping($connection)->then(null, function($e) use ($ping){
                     if ($ping) {
                         Loop::cancelTimer($ping);
                     }
@@ -167,7 +167,7 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
     }
 
 
-    protected function ping($connection)
+    protected function _ping($connection)
     {
         $that = $this;
         return $connection->ping()->then(function () use ($connection, $that) {
@@ -181,6 +181,21 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
             $that->current_connections--;
             throw $e;
         });
+    }
+
+    public function getPoolCount()
+    {
+        return $this->current_connections;
+    }
+
+    public function getWaitCount()
+    {
+        return $this->wait_queue->count();
+    }
+
+    public function idleConnectionCount()
+    {
+        return $this->idle_connections->count();
     }
 
     abstract protected function createConnection();
