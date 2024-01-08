@@ -97,7 +97,7 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
     public function releaseConnection($connection)
     {
         if ($this->closed) {
-            $connection->close();
+            $this->_close($connection);
             $this->current_connections--;
             return;
         }
@@ -114,7 +114,7 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
         $ping = null;
         $timer = Loop::addTimer($this->keep_alive, function () use ($connection, &$ping) {
             if ($this->idle_connections->count() > $this->min_connections) {
-                $connection->quit();
+                $this->_quit($connection);
                 $this->idle_connections->detach($connection);
                 $this->current_connections--;
             } else {
@@ -161,7 +161,7 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
                 $ping = null;
             }
             $this->idle_connections->detach($connection);
-            $connection->close();
+            $this->_close($connection);
             $this->current_connections--;
         }
     }
@@ -196,6 +196,16 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
     public function idleConnectionCount()
     {
         return $this->idle_connections->count();
+    }
+
+    protected function _quit($connection)
+    {
+        $connection->quit();
+    }
+
+    protected function _close($connection)
+    {
+        $connection->close();
     }
 
     abstract protected function createConnection();
