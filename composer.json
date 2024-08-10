@@ -1,9 +1,9 @@
 {
-    "name": "reactphp-framework/pool",
+    "name": "reactphp-x/pool",
     "license": "MIT",
     "autoload": {
         "psr-4": {
-            "Reactphp\\Framework\\Pool\\": "src/"
+            "ReactphpX\\Pool\\": "src/"
         }
     },
     "authors": [

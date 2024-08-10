@@ -1,7 +1,7 @@
 <?php
 
 
-namespace Reactphp\Framework\Pool;
+namespace ReactphpX\Pool;
 
 use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;

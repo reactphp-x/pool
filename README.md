@@ -1,11 +1,11 @@
-# reactphp-framework-pool
+# reactphp-x-pool
 
 ## install
 
 ```
-composer require reactphp-framework/pool -vvv
+composer require reactphp-x/pool -vvv
 ```
 
 ## Usage
 
-see [mysql-pool](https://github.com/reactphp-framework/mysql-pool)
+see [mysql-pool](https://github.com/reactphp-x/mysql-pool)

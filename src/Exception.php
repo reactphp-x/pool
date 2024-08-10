@@ -1,6 +1,6 @@
 <?php
 
-namespace Reactphp\Framework\Pool;
+namespace ReactphpX\Pool;
 
 
 class Exception extends \Exception
