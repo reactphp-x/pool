@@ -4,209 +4,205 @@
 namespace ReactphpX\Pool;
 
 use React\EventLoop\Loop;
-use React\EventLoop\LoopInterface;
+use React\Promise;
 use React\Promise\Deferred;
-use function React\Promise\reject;
-use function React\Promise\resolve;
-use React\Promise\Timer\TimeoutException;
+use function React\Async\async;
 
 abstract class AbstractConnectionPool implements ConnectionPoolInterface
 {
 
-    protected $min_connections;
-    protected $max_connections;
+    private $pool;
 
-    protected $keep_alive;
+    private int $currentConnections = 0;
+    private $keepAliveTimer;
 
-    protected $max_wait_queue;
-    protected $current_connections = 0;
-    protected $wait_timeout = 0;
-    protected $idle_connections = [];
-    protected $wait_queue;
-    protected $loop;
-    protected $closed;
+    private $closed = false;
 
+    private $quitting = false;
+    private $quitDeferred = null;
+
+    private $queue = [];
+    private $prioritizes = [];
 
     public function __construct(
-        $config = [],
-        LoopInterface $loop = null,
+        private string $uri,
+        private int $minConnections = 2,
+        private int $maxConnections = 10,
+        private int $waitQueue = 100,
+        private int $waitTimeout = 0,
     ) {
-        $this->loop = $loop ?: Loop::get();
-        $this->min_connections = $config['min_connections'] ?? 1;
-        $this->max_connections = $config['max_connections'] ?? 10;
-        $this->keep_alive = $config['keep_alive'] ?? 60;
-        $this->max_wait_queue = $config['max_wait_queue'] ?? 100;
-        $this->wait_timeout = $config['wait_timeout'] ?? 1;
-        $this->wait_queue = new \SplObjectStorage;
-        $this->idle_connections = new \SplObjectStorage;
+        $this->pool = new \SplObjectStorage();
     }
 
-
-    public function getConnection()
+    public function getConnection($prioritize = 0)
     {
-        if ($this->closed) {
-            return reject(new Exception('pool is closed'));
+
+        if ($this->closed || $this->quitting) {
+            return \React\Promise\reject(new Exception('Connection closed'));
         }
 
-        if ($this->idle_connections->count() > 0) {
-            $this->idle_connections->rewind();
-            $connection = $this->idle_connections->current();
-            if ($timer = $this->idle_connections[$connection]['timer']) {
-                Loop::cancelTimer($timer);
+        if ($this->pool->count() > 0) {
+            $this->pool->rewind();
+            $connection = $this->pool->current();
+            $this->pool->detach($connection);
+            return \React\Promise\resolve($connection);
+        }
+
+        if ($this->currentConnections >= $this->maxConnections) {
+            if ($this->waitQueue > 0 && count($this->queue) >= $this->waitQueue) {
+                return Promise\reject(new \OverflowException('Max Queue reached'));
             }
-            if ($ping = $this->idle_connections[$connection]['ping']) {
-                Loop::cancelTimer($ping);
-                $ping = null;
+            // get next queue position
+            $queue = &$this->queue;
+            $prioritizes = &$this->prioritizes;
+            $queue[] = null;
+            \end($queue);
+            $id = \key($queue);
+            $prioritizes[$id] = $prioritize;
+            arsort($prioritizes);
+            $deferred = new Deferred(function ($_, $reject) use (&$queue, &$prioritizes, $id) {
+                unset($queue[$id]);
+                unset($prioritizes[$id]);
+                $reject(new \RuntimeException('Cancelled queued next handler'));
+            });
+
+            $queue[$id] = $deferred;
+
+            if ($this->waitTimeout <= 0) {
+                return $deferred->promise();
             }
-            $this->idle_connections->detach($connection);
-            return resolve($connection);
+            return \React\Promise\Timer\timeout($deferred->promise(), $this->waitTimeout)->then(null, function ($error) use (&$queue, &$prioritizes, $id) {
+                unset($queue[$id]);
+                unset($prioritizes[$id]);
+                throw $error;
+            });
         }
 
-        if ($this->current_connections < $this->max_connections) {
-            $this->current_connections++;
-            return resolve($this->createConnection());
-        }
-
-        if ($this->max_wait_queue && $this->wait_queue->count() >= $this->max_wait_queue) {
-            return reject(new Exception("over max_wait_queue: " . $this->max_wait_queue . '-current quueue:' . $this->wait_queue->count()));
-        }
-
-        $deferred = new Deferred();
-        $this->wait_queue->attach($deferred);
-
-        if (!$this->wait_timeout) {
-            return $deferred->promise();
-        }
-
-        $that = $this;
-
-        return \React\Promise\Timer\timeout($deferred->promise(), $this->wait_timeout, $this->loop)->then(null, function ($e) use ($that, $deferred) {
-
-            $that->wait_queue->detach($deferred);
-
-            if ($e instanceof TimeoutException) {
-                throw new \RuntimeException(
-                    'wait timed out after ' . $e->getTimeout() . ' seconds (ETIMEDOUT)' . 'and wait queue ' . $that->wait_queue->count() . ' count',
-                    \defined('SOCKET_ETIMEDOUT') ? \SOCKET_ETIMEDOUT : 110
-                );
-            }
-            throw $e;
-        });
+        return \React\Promise\resolve($this->createConnection());
     }
 
     public function releaseConnection($connection)
     {
+
         if ($this->closed) {
-            $this->_close($connection);
-            $this->current_connections--;
+            $connection->close();
             return;
         }
 
-        if ($this->wait_queue->count() > 0) {
-            $this->wait_queue->rewind();
-            $deferred = $this->wait_queue->current();
-            $deferred->resolve($connection);
-            $this->wait_queue->detach($deferred);
+        if ($this->queue) {
+            reset($this->prioritizes);
+            $id = key($this->prioritizes);
+            $first = $this->queue[$id];
+            unset($this->queue[$id]);
+            unset($this->prioritizes[$id]);
+            $first->resolve($connection);
             return;
         }
 
-
-        $ping = null;
-        $timer = Loop::addTimer($this->keep_alive, function () use ($connection, &$ping) {
-            if ($this->idle_connections->count() > $this->min_connections) {
-                $this->_quit($connection);
-                $this->idle_connections->detach($connection);
-                $this->current_connections--;
-            } else {
-                $ping = Loop::addPeriodicTimer($this->keep_alive, function () use ($connection, &$ping) {
-                   $this->_ping($connection)->then(null, function($e) use ($ping){
-                       if ($ping) {
-                           Loop::cancelTimer($ping);
-                       }
-                       $ping = null;
-                   });
-                });
-                $this->_ping($connection)->then(null, function($e) use ($ping){
-                    if ($ping) {
-                        Loop::cancelTimer($ping);
-                    }
-                    $ping = null;
-                });
-
+        $this->pool->attach($connection);
+        if ($this->quitting && $this->pool->count() === $this->currentConnections) {
+            if ($this->quitDeferred) {
+                $this->quitDeferred->resolve(null);
             }
-        });
-
-        $this->idle_connections->attach($connection, [
-            'timer' => $timer,
-            'ping' => &$ping
-        ]);
+        }
     }
 
     public function close()
     {
+
         if ($this->closed) {
             return;
         }
-
         $this->closed = true;
-
-        while ($this->idle_connections->count() > 0) {
-            $this->idle_connections->rewind();
-            $connection = $this->idle_connections->current();
-            if ($timer = $this->idle_connections[$connection]['timer']) {
-                Loop::cancelTimer($timer);
-            }
-            if ($ping = $this->idle_connections[$connection]['ping']) {
-                Loop::cancelTimer($ping);
-                $ping = null;
-            }
-            $this->idle_connections->detach($connection);
-            $this->_close($connection);
-            $this->current_connections--;
+        $this->quitting = false;
+        $this->quitDeferred = null;
+        if ($this->keepAliveTimer) {
+            Loop::cancelTimer($this->keepAliveTimer);
+            $this->keepAliveTimer = null;
         }
+
+        if ($this->pool->count() > 0) {
+            foreach ($this->pool as $connection) {
+                $connection->close();
+            }
+        }
+
+        if ($this->queue) {
+            foreach ($this->queue as $id => $deferred) {
+                $deferred->reject(new Exception('Connection closed'));
+            }
+        }
+
     }
 
-
-    protected function _ping($connection)
+    public function quit()
     {
-        $that = $this;
-        return $connection->ping()->then(function () use ($connection, $that) {
-            if (!$that->idle_connections->contains($connection)) {
-                $that->releaseConnection($connection);
-            }
-        }, function ($e) use ($connection, $that) {
-            if ($that->idle_connections->contains($connection)) {
-                $that->idle_connections->detach($connection);
-            }
-            $that->current_connections--;
-            throw $e;
+        if ($this->closed || $this->quitting) {
+            return \React\Promise\reject(new Exception('Connection closed'));
+        }
+
+        $this->quitting = true;
+        if ($this->keepAliveTimer) {
+            Loop::cancelTimer($this->keepAliveTimer);
+            $this->keepAliveTimer = null;
+        }
+
+        if ($this->pool->count() === $this->currentConnections) {
+            $this->close();
+            return \React\Promise\resolve(null);
+        }
+
+        $deferred = new Deferred();
+        $this->quitDeferred = $deferred;
+        return $deferred->promise()->then(function () {
+            $this->close();
         });
     }
 
-    public function getPoolCount()
+    public function keepAlive($time = 30)
     {
-        return $this->current_connections;
-    }
+        if ($this->closed || $this->quitting) {
+            throw new Exception('Connection closed');
+        }
 
-    public function getWaitCount()
-    {
-        return $this->wait_queue->count();
-    }
+        if ($this->keepAliveTimer) {
+            Loop::cancelTimer($this->keepAliveTimer);
+            $this->keepAliveTimer = null;
+        }
 
-    public function idleConnectionCount()
-    {
-        return $this->idle_connections->count();
+        $this->keepAliveTimer = Loop::addPeriodicTimer($time, function () {
+            async(function () {
+                if ($this->closed || $this->quitting) {
+                    return;
+                }
+                if ($this->minConnections <= 0) {
+                    return;
+                }
+                if ($this->currentConnections - $this->pool->count() >= $this->minConnections) {
+                    return;
+                }
+                $pingCount = $this->minConnections - ($this->currentConnections - $this->pool->count());
+                $this->pool->rewind();
+                $i = 0;
+                foreach ($this->pool as $connection) {
+                    $i++;
+                    $this->getConnection()->then(function ($connection) {
+                        return $connection->ping()->then(function ($result) use ($connection) {
+                            $this->releaseConnection($connection);
+                            return $result;
+                        }, function ($error) use ($connection) {
+                            $this->releaseConnection($connection);
+                            throw $error;
+                        });
+                    });
+                    if ($i >= $pingCount) {
+                        break;
+                    }
+                }
+            })();
+        });
     }
-
-    protected function _quit($connection)
-    {
-        $connection->quit();
-    }
-
-    protected function _close($connection)
-    {
-        $connection->close();
-    }
+ 
 
     abstract protected function createConnection();
 }
