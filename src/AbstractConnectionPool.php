@@ -11,7 +11,7 @@ use function React\Async\async;
 abstract class AbstractConnectionPool implements ConnectionPoolInterface
 {
 
-    private $pool;
+    protected $pool;
 
     private int $currentConnections = 0;
     private $keepAliveTimer;
