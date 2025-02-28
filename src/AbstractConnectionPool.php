@@ -13,7 +13,7 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
 
     protected $pool;
 
-    private int $currentConnections = 0;
+    protected int $currentConnections = 0;
     private $keepAliveTimer;
 
     private $closed = false;
@@ -25,7 +25,7 @@ abstract class AbstractConnectionPool implements ConnectionPoolInterface
     private $prioritizes = [];
 
     public function __construct(
-        private string $uri,
+        protected string $uri,
         private int $minConnections = 2,
         private int $maxConnections = 10,
         private int $waitQueue = 100,
